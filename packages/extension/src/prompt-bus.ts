@@ -138,17 +138,18 @@ export class PromptBus {
   /**
    * Like {@link request} but with a CALLER-chosen id, so the caller can
    * `cancel(id)` its own prompt (agent path gate budget expiry). The caller owns
-   * uniqueness. See change: ask-agent-file-access-in-chat.
+   * uniqueness. An optional timeout overrides the bus default; <= 0 disables it.
+   * See change: ask-agent-file-access-in-chat.
    */
-  requestWithId(id: string, options: Omit<PromptRequest, "id">): Promise<PromptResponse> {
-    return this.submit(id, options);
+  requestWithId(id: string, options: Omit<PromptRequest, "id">, timeoutMs?: number): Promise<PromptResponse> {
+    return this.submit(id, options, timeoutMs);
   }
 
-  private submit(id: string, options: Omit<PromptRequest, "id">): Promise<PromptResponse> {
+  private submit(id: string, options: Omit<PromptRequest, "id">, timeoutOverride?: number): Promise<PromptResponse> {
     const request: PromptRequest = { id, ...options };
 
     return new Promise<PromptResponse>((resolve) => {
-      const timeoutMs = this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const timeoutMs = timeoutOverride ?? this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       // timeoutMs <= 0 means infinite — never fire a cancellation timer.
       const timer = timeoutMs > 0
         ? setTimeout(() => { this.cancel(id); }, timeoutMs)

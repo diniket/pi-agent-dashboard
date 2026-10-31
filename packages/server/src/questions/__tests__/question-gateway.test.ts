@@ -9,12 +9,12 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import Fastify from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBrowserGateway } from "../../pairing/browser-gateway.js";
 import { createMemoryEventStore } from "../../persistence/memory-event-store.js";
 import type { PiGateway } from "../../pi/pi-gateway.js";
 import { createMemorySessionManager } from "../../session/memory-session-manager.js";
-import Fastify from "fastify";
 import { registerQuestionRoutes } from "../question-routes.js";
 import { createQuestionStack } from "../question-stack.js";
 
@@ -90,6 +90,27 @@ describe("gateway ↔ question store", () => {
     const late = fakeWs(anna);
     gateway.wss.emit("connection", late, {});
     expect(qframes(late)[0].questions).toHaveLength(1);
+  });
+
+  it("keeps pi-sudo prompts out of the durable Question Stack while retaining live prompt tracking", () => {
+    vi.useFakeTimers();
+    try {
+      const { gateway, wa } = setup();
+      gateway.trackPromptRequest("s1", prompt("s1", "sudo-p1", {
+        prompt: {
+          question: "sudo: local password required",
+          type: "input",
+          metadata: { kind: "pi-sudo-password", message: "Test requested" },
+        },
+      }) as never);
+      vi.advanceTimersByTime(300);
+
+      expect(gateway.hasPendingPromptRequests("s1")).toBe(true);
+      expect(filesOnDisk()).toEqual([]);
+      expect(qframes(wa).every((frame) => frame.questions.length === 0)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("the initial questions frame precedes sessions_snapshot, which stays the LAST bootstrap frame", () => {

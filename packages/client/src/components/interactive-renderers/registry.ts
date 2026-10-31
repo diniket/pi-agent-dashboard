@@ -1,12 +1,13 @@
-import type { InteractiveRenderer } from "./types.js";
+import { BatchRenderer } from "./BatchRenderer.js";
 import { ConfirmRenderer } from "./ConfirmRenderer.js";
-import { SelectRenderer } from "./SelectRenderer.js";
-import { InputRenderer } from "./InputRenderer.js";
 import { EditorRenderer } from "./EditorRenderer.js";
+import { GenericInteractiveRenderer } from "./GenericInteractiveRenderer.js";
+import { InputRenderer } from "./InputRenderer.js";
 import { MultiselectRenderer } from "./MultiselectRenderer.js";
 import { NotifyRenderer } from "./NotifyRenderer.js";
-import { BatchRenderer } from "./BatchRenderer.js";
-import { GenericInteractiveRenderer } from "./GenericInteractiveRenderer.js";
+import { SelectRenderer } from "./SelectRenderer.js";
+import { SudoPasswordRenderer } from "./SudoPasswordRenderer.js";
+import type { InteractiveRenderer } from "./types.js";
 
 const renderers = new Map<string, InteractiveRenderer>([
   ["confirm", ConfirmRenderer],
@@ -24,6 +25,7 @@ export function registerInteractiveRenderer(method: string, renderer: Interactiv
 }
 
 /** Get the renderer for an interactive UI method, falling back to GenericInteractiveRenderer */
-export function getInteractiveRenderer(method: string): InteractiveRenderer {
+export function getInteractiveRenderer(method: string, componentType?: string): InteractiveRenderer {
+  if (componentType === "pi-sudo-password") return SudoPasswordRenderer;
   return renderers.get(method) ?? GenericInteractiveRenderer;
 }

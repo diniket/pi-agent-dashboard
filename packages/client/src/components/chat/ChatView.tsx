@@ -101,7 +101,7 @@ interface Props {
   // onCancelPending removed — pi exposes no queue-mutation API, so the
   // cancel-pending callback was always a shadow-only lie. See change:
   // honest-mid-turn-queue-surface.
-  onRespondToUi?: (requestId: string, result?: unknown, cancelled?: boolean) => void;
+  onRespondToUi?: (requestId: string, result?: unknown, cancelled?: boolean, sensitive?: boolean) => void;
   /**
    * Fire a pending-prompt resync (`prompt_resync_request`) for this session.
    * Provided by the shell; the same single callback the refresh coordinator
@@ -381,9 +381,10 @@ function MessageBubble({ content, className, timestamp, entryId, onFork, context
 
 function InteractiveUiCard({ request, onRespondToUi }: {
   request: InteractiveUiRequest;
-  onRespondToUi?: (requestId: string, result?: unknown, cancelled?: boolean) => void;
+  onRespondToUi?: (requestId: string, result?: unknown, cancelled?: boolean, sensitive?: boolean) => void;
 }) {
-  const Renderer = getInteractiveRenderer(request.method);
+  const componentType = (request.params._promptBusComponent as { type?: string } | undefined)?.type;
+  const Renderer = getInteractiveRenderer(request.method, componentType);
   const card = (
     <Renderer
       requestId={request.requestId}
@@ -391,8 +392,12 @@ function InteractiveUiCard({ request, onRespondToUi }: {
       params={request.params}
       status={request.status}
       result={request.result}
-      onRespond={(result) => onRespondToUi?.(request.requestId, result)}
-      onCancel={() => onRespondToUi?.(request.requestId, undefined, true)}
+      onRespond={(result) => componentType === "pi-sudo-password"
+        ? onRespondToUi?.(request.requestId, result, false, true)
+        : onRespondToUi?.(request.requestId, result)}
+      onCancel={() => componentType === "pi-sudo-password"
+        ? onRespondToUi?.(request.requestId, undefined, true, true)
+        : onRespondToUi?.(request.requestId, undefined, true)}
     />
   );
   // A pending ask is the scroll/focus target of the question stack's

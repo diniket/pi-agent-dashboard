@@ -6,4 +6,4 @@ Exports `PendingSpawnEntry` `{cwd, kind, placeholderCwd?, focus?}` — single ty
 
 redesign-directory-home-split: `handleSpawnSession` opts gain `model?`/`thinkingLevel?` (sent on `spawn_session`) and now RETURNS the minted `requestId`. New dep `getResumePick(sessionId)`: an ENDED target's pick rides `send_prompt`; `handleResumeSession(..., "continue")` rides `resume_session`; never on fork / live sessions.
 
-Request ids minted via `randomUuid()` instead of `crypto.randomUUID` (non-secure LAN origins have no `randomUUID`). See change: add-lan-knock-pairing.
+Sensitive PromptBus answers skip legacy `extension_ui_response`, call `send(...,{queue:false})`, and resolve local state without retaining the answer only after a `handed` verdict; otherwise the prompt stays pending for retry. Request ids minted via `randomUuid()` instead of `crypto.randomUUID` (non-secure LAN origins have no `randomUUID`). See change: add-lan-knock-pairing.

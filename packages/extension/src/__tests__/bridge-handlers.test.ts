@@ -75,14 +75,18 @@ describe("E4: each extracted module imports and runs without the entry point", (
 describe("X6: session_start on a no-UI session", () => {
   it("does not register the TUI adapter and still registers the dashboard adapter", async () => {
     const { patchUiForPromptBus } = await uiPatchModule;
-    const registerAdapter = vi.fn();
+    const registerAdapter = vi.fn((adapter: { name: string }) => () => adapter.name);
     const bus = { request: vi.fn(), registerAdapter } as never;
     const { inst } = makeStubInstance();
     patchUiForPromptBus(inst, { hasUI: false, ui: {} }, bus);
-    // The TUI adapter is the only adapter `patchUiForPromptBus` registers; none for hasUI=false.
-    expect(registerAdapter).not.toHaveBeenCalled();
-    patchUiForPromptBus(inst, { hasUI: true, ui: {} }, bus);
+    // The password adapter is always present for Dashboard RPC prompts; the TUI
+    // adapter is registered only when the native UI was available.
     expect(registerAdapter).toHaveBeenCalledTimes(1);
+    expect(registerAdapter.mock.calls[0][0].name).toBe("pi-sudo-password");
+    patchUiForPromptBus(inst, { hasUI: true, ui: {} }, bus);
+    const adapters = registerAdapter.mock.calls.map(([adapter]) => adapter.name);
+    expect(adapters.filter((name) => name === "pi-sudo-password")).toHaveLength(2);
+    expect(adapters.some((name) => name !== "pi-sudo-password")).toBe(true);
   });
 });
 

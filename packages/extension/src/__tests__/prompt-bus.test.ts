@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { PromptBus, type PromptAdapter, type PromptRequest, type PromptResponse } from "../prompt-bus.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type PromptAdapter, PromptBus, type PromptRequest } from "../prompt-bus.js";
 import { settlePrompts } from "./helpers/settle-prompts.js";
 
 function createMockAdapter(name: string, claim: any = {}) {
@@ -71,6 +71,18 @@ describe("PromptBus", () => {
   });
 
   describe("request distribution", () => {
+    it("supports request-specific finite and infinite timeouts", async () => {
+      const finite = bus.requestWithId("finite", { pipeline: "command", type: "input", question: "Finite" }, 100);
+      await vi.advanceTimersByTimeAsync(101);
+      await expect(finite).resolves.toMatchObject({ cancelled: true });
+
+      const infinite = bus.requestWithId("infinite", { pipeline: "command", type: "input", question: "Infinite" }, 0);
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(onDashboardCancel).toHaveBeenCalledTimes(1);
+      bus.cancel("infinite");
+      await expect(infinite).resolves.toMatchObject({ cancelled: true });
+    });
+
     it("should call onRequest on all registered adapters", async () => {
       const a = createMockAdapter("a");
       const b = createMockAdapter("b");

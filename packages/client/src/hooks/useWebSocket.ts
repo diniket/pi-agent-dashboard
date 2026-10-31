@@ -307,7 +307,7 @@ export function useWebSocket(url: string, onIdentityExpired?: () => void | Promi
   // (plugin-action-bridge registration is set up below in another useEffect
   // after `send` is defined.)
 
-  const send = useCallback((msg: BrowserToServerMessage): SendVerdict => {
+  const send = useCallback((msg: BrowserToServerMessage, options?: { queue?: boolean }): SendVerdict => {
     const socket = wsRef.current;
     if (socket && socket.readyState === WebSocket.OPEN) {
       try {
@@ -319,7 +319,8 @@ export function useWebSocket(url: string, onIdentityExpired?: () => void | Promi
         return { status: "rejected", reason: "send_failed" };
       }
     }
-    if (!socket) {
+    if (!socket || options?.queue === false) {
+      // Sensitive prompt responses must never be retained for reconnect replay.
       return { status: "rejected", reason: "no_socket" };
     }
     // A socket exists but is CONNECTING/CLOSING/CLOSED: retain the message for

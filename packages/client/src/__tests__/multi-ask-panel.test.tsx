@@ -134,6 +134,25 @@ describe("MultiAskPanel — grouped concurrent asks", () => {
     expect(queryByTestId("multi-ask-panel")).toBeNull();
   });
 
+  it("renders a free-floating pi-sudo request masked and marks its response sensitive", () => {
+    const onRespond = vi.fn();
+    const request: InteractiveUiRequest = {
+      requestId: "sudo-p1",
+      method: "input",
+      params: { title: "sudo: local password required", _promptBusComponent: { type: "pi-sudo-password" } },
+      status: "pending",
+    };
+    const { getByTestId, container, getByRole } = renderPanel(
+      <MultiAskPanel requests={[request]} onRespondToUi={onRespond} />,
+    );
+    const input = container.querySelector('input[type="password"]') as HTMLInputElement;
+    expect(input).toBeTruthy();
+    fireEvent.change(input, { target: { value: "not-a-real-secret" } });
+    fireEvent.click(getByRole("button", { name: "Submit" }));
+    expect(onRespond).toHaveBeenCalledWith("sudo-p1", { value: "not-a-real-secret" }, false, true);
+    expect(getByTestId("multi-ask-card-sudo-p1").textContent).not.toContain("not-a-real-secret");
+  });
+
   it("C6 a batch entry renders as its wizard alongside a confirm card", () => {
     const batch: InteractiveUiRequest = {
       requestId: "pb",
@@ -202,6 +221,16 @@ describe("derivePendingFreeFloating — panel-vs-inline placement", () => {
     const messages: ChatMessage[] = [uiRow("p1")];
     const requests = [confirmReq("p1", "Free ask", "y")];
     expect(derivePendingFreeFloating(messages, requests).map((r) => r.requestId)).toEqual(["p1"]);
+  });
+
+  it("routes the unregistered pi-sudo-password component to the free-floating panel", () => {
+    const request: InteractiveUiRequest = {
+      requestId: "sudo-p1",
+      method: "input",
+      params: { title: "sudo password", _promptBusComponent: { type: "pi-sudo-password" } },
+      status: "pending",
+    };
+    expect(derivePendingFreeFloating([uiRow("sudo-p1")], [request]).map((r) => r.requestId)).toEqual(["sudo-p1"]);
   });
 
   // Covers test-plan #E3 (harden-multi-ask-panel): the (¬tcid, wb) cell — the

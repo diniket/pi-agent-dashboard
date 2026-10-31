@@ -3,11 +3,11 @@
  * Handles send, abort, resume, spawn, archive, rename, shutdown, terminal, and selection actions.
  */
 
+import { encodePromptAnswer } from "@blackbelt-technology/pi-dashboard-shared/prompt-answer.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import type { DashboardSession, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { useCallback } from "react";
 import { createInitialState, resolveInteractiveRequest, type SessionState } from "../lib/chat/event-reducer.js";
-import { encodePromptAnswer } from "@blackbelt-technology/pi-dashboard-shared/prompt-answer.js";
 import { randomUuid } from "../lib/util/random-uuid.js";
 import type { ResumePick } from "./useEndedSessionComposer.js";
 import type { SendVerdict } from "./useWebSocket.js";
@@ -27,7 +27,7 @@ export interface PendingSpawnEntry {
 
 export interface SessionActionDeps {
   selectedId: string | undefined;
-  send: (msg: any) => SendVerdict | void;
+  send: (msg: any, options?: { queue?: boolean }) => SendVerdict | void;
   navigate: (to: string) => void;
   setMobileOpen: React.Dispatch<React.SetStateAction<boolean>>;
   /**
@@ -165,9 +165,9 @@ export function useSessionActions(deps: SessionActionDeps) {
     }
   }, [selectedId, send, setSessionStates]);
 
-  const handleRespondToUi = useCallback((requestId: string, result?: unknown, cancelled?: boolean) => {
+  const handleRespondToUi = useCallback((requestId: string, result?: unknown, cancelled?: boolean, sensitive?: boolean) => {
     if (selectedId) {
-      send({ type: "extension_ui_response", sessionId: selectedId, requestId, result, cancelled });
+      if (!sensitive) send({ type: "extension_ui_response", sessionId: selectedId, requestId, result, cancelled });
       // Also send via PromptBus protocol for new-style prompts.
       // Encoding precedence (multiselect-aware): see shared/prompt-answer.ts.
       // Fix: change fix-multiselect-auto-cancel-on-dashboard.
@@ -180,12 +180,18 @@ export function useSessionActions(deps: SessionActionDeps) {
         result && typeof result === "object" && Array.isArray((result as any).images)
           ? (result as any).images
           : undefined;
-      send({ type: "prompt_response", sessionId: selectedId, promptId: requestId, answer, cancelled, source: "dashboard-default", images } as any);
+      const responseVerdict = send(
+        { type: "prompt_response", sessionId: selectedId, promptId: requestId, answer, cancelled, source: "dashboard-default", images } as any,
+        sensitive ? { queue: false } : undefined,
+      );
+      // Do not claim a sensitive answer was delivered or retain it for replay;
+      // leave the prompt pending unless an OPEN socket accepted the send.
+      if (sensitive && !cancelled && responseVerdict?.status !== "handed") return;
       setSessionStates((prev) => {
         const next = new Map(prev);
         const current = next.get(selectedId);
         if (current) {
-          next.set(selectedId, resolveInteractiveRequest(current, requestId, result, cancelled));
+          next.set(selectedId, resolveInteractiveRequest(current, requestId, sensitive ? undefined : result, cancelled));
         }
         return next;
       });

@@ -166,6 +166,7 @@ export function frameClassOf(
 }
 
 import { randomUUID } from "node:crypto";
+import { DEFAULT_MEMORY_LIMITS } from "@blackbelt-technology/pi-dashboard-shared/memory-limits.js";
 import type { UpgradeHeaders } from "../access/capability-issuance.js";
 import { hasPromptChannel, issuePromptChannel, releasePromptChannel } from "../access/prompt-channel.js";
 import { guardAcpBrowserMessage } from "../browser-handlers/acp-guard.js";
@@ -174,14 +175,13 @@ import type { BrowserHandlerContext } from "../browser-handlers/handler-context.
 import { acpGuardCtx, handleAbort, handleClearFollowupEntries, handleEditFollowupEntry, handleFlowControl, handleForceKill, handleKillProcess, handlePromoteFollowupEntry, handlePromptResyncRequest, handleRemoveFollowupEntry, handleResumeSession, handleRetrySession, handleSendPrompt, handleShutdown, handleSpawnSession, handleStopAfterTurn, handleSubagentResyncRequest, shutdownSession as shutdownSessionImpl } from "../browser-handlers/session-action-handler.js";
 import { handleAcceptReplaceProposal, handleArchiveSession, handleAttachProposal, handleDetachProposal, handleDismissReplaceProposal, handleFetchContent, handleListSessions, handleRemoveTagGlobally, handleRenameSession, handleSessionsPage, handleSetSessionDisplayPrefs, handleSetSessionProcessDrawer, handleSetSessionTags, handleUnarchiveSession } from "../browser-handlers/session-meta-handler.js";
 import { clearGapState, handleHistoryBackfill, handleSubscribe, sendEventBatches } from "../browser-handlers/subscription-handler.js";
-import { DEFAULT_MEMORY_LIMITS } from "@blackbelt-technology/pi-dashboard-shared/memory-limits.js";
-import type { ReplayState } from "../session/hydration-state.js";
-import { listKnownFolderCwds } from "../lib/route-admission.js";
 import { handleCloseInlineTerminal, handleCreateTerminal, handleKillTerminal, handleOpenInlineTerminal, handleRenameTerminal } from "../browser-handlers/terminal-handler.js";
+import { listKnownFolderCwds } from "../lib/route-admission.js";
 import { createPendingResumeRegistry, type PendingResumeRegistry } from "../pending/pending-resume-registry.js";
 import { relayBrowserPromptResponse } from "../questions/question-answer.js";
 import { createQuestionBroadcaster, createQuestionVisibility, type QuestionBroadcaster } from "../questions/question-broadcast.js";
 import type { QuestionStore } from "../questions/question-store.js";
+import type { ReplayState } from "../session/hydration-state.js";
 import { createViewedSessionTracker, type ViewedSessionTracker } from "../session/viewed-session-tracker.js";
 import type { TerminalManager } from "../terminal/terminal-manager.js";
 import { isSocketLocallyTrusted } from "./socket-locality.js";
@@ -903,8 +903,12 @@ export function createBrowserGateway(
     if (promptId) {
       sessionMap.set(promptId, msg);
       // The notify guard in event-wiring runs before this point, so only real
-      // asks reach the question store. See change: add-pending-question-stack (D1).
-      questionStore?.onTracked(sessionId, msg);
+      // asks reach the question store. Password prompts stay out of its durable
+      // Question Stack/REST answer path; the live PromptBus route owns them.
+      const prompt = msg.prompt as { metadata?: { kind?: unknown } } | undefined;
+      if (prompt?.metadata?.kind !== "pi-sudo-password") {
+        questionStore?.onTracked(sessionId, msg);
+      }
     }
   }
 

@@ -96,6 +96,23 @@ describe("useWebSocket — send verdict & outbox", () => {
     }
   });
 
+  it("does not queue explicitly non-queueable sensitive responses", () => {
+    const { result } = renderHook(() => useWebSocket("ws://test"));
+    const ws = lastSocket();
+    const message = { type: "prompt_response", sessionId: "s1", promptId: "p1", answer: "ephemeral" } as any;
+
+    let verdict: any;
+    act(() => { verdict = result.current.send(message, { queue: false }); });
+    expect(verdict).toEqual({ status: "rejected", reason: "no_socket" });
+    expect(ws.sent).toHaveLength(0);
+
+    act(() => ws.open());
+    expect(ws.sent).toHaveLength(0);
+    act(() => { verdict = result.current.send(message, { queue: false }); });
+    expect(verdict).toEqual({ status: "handed" });
+    expect(ws.sent).toHaveLength(1);
+  });
+
   it("E3: no socket instance rejects rather than throwing", () => {
     MockWebSocket.throwOnConstruct = true;
     const { result } = renderHook(() => useWebSocket("ws://test"));

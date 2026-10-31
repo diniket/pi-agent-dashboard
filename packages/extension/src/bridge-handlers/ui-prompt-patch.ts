@@ -9,9 +9,9 @@ import type { ImageContent } from "@blackbelt-technology/pi-dashboard-shared/typ
 import { MAX_PER_MESSAGE_BYTES as ATTACH_MAX_PER_MESSAGE_BYTES, persistAttachment } from "../ask-user-attachments.js";
 import { decodeMultiselectAnswer } from "../multiselect-decode.js";
 import { createNotifyProxy } from "../notify-proxy.js";
+import type { PromptBus } from "../prompt-bus.js";
 import { buildPromptMeta } from "../prompt-meta.js";
 import { createTuiPromptAdapter } from "../tui-prompt-adapter.js";
-import type { PromptBus } from "../prompt-bus.js";
 import type { BridgeInstance } from "./instance.js";
 
 /**
@@ -26,6 +26,7 @@ import type { BridgeInstance } from "./instance.js";
 export function patchUiForPromptBus(inst: BridgeInstance, ctx: any, promptBus: PromptBus): void {
     // Capture original ctx.ui method references BEFORE patching
     const originalNotify = ctx.ui.notify?.bind(ctx.ui);
+    const originalCustom = ctx.ui.custom?.bind(ctx.ui);
     const originals = {
       select: ctx.ui.select?.bind(ctx.ui) as ((q: string, opts: string[], extra?: any) => Promise<string | undefined>) | undefined,
       input: ctx.ui.input?.bind(ctx.ui) as ((q: string, placeholder?: string, extra?: any) => Promise<string | undefined>) | undefined,
@@ -54,6 +55,87 @@ export function patchUiForPromptBus(inst: BridgeInstance, ctx: any, promptBus: P
     // now route through the bus, which distributes to all registered adapters.
     {
       const bus = promptBus;
+      const sudoPasswordAdapter = {
+        name: "pi-sudo-password",
+        priority: 0,
+        onRequest(prompt: any) {
+          if (prompt.metadata?.kind !== "pi-sudo-password") return undefined;
+          return { component: { type: "pi-sudo-password", props: {} }, placement: "inline" as const };
+        },
+        onResponse() {},
+        onCancel() {},
+      };
+      bus.registerAdapter(sudoPasswordAdapter);
+
+      if (originalCustom) {
+        const custom = (factory: any, options?: unknown): Promise<unknown> => {
+          const descriptor = factory?.__piDashboardSudoPasswordPrompt;
+          // Only pi-sudo's explicitly tagged prompt crosses the bridge, and
+          // only in RPC sessions that started without a UI. Native TUI sessions
+          // retain the original custom renderer unchanged.
+          if (descriptor?.kind !== "password" || inst.cachedHasUI !== false) {
+            return originalCustom(factory, options);
+          }
+
+          const promptId = crypto.randomUUID();
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          let timedOut = false;
+          let settled = false;
+          const signal: AbortSignal | undefined = descriptor.signal;
+
+          return new Promise((resolve) => {
+            const finish = (result: unknown) => {
+              if (settled) return;
+              settled = true;
+              if (timer) clearTimeout(timer);
+              signal?.removeEventListener("abort", onAbort);
+              resolve(result);
+            };
+            const onAbort = () => {
+              bus.cancel(promptId);
+              finish({ kind: "cancelled" });
+            };
+
+            if (signal?.aborted) {
+              finish({ kind: "cancelled" });
+              return;
+            }
+            signal?.addEventListener("abort", onAbort, { once: true });
+            if (typeof descriptor.timeoutMs === "number" && descriptor.timeoutMs > 0) {
+              timer = setTimeout(() => {
+                timedOut = true;
+                bus.cancel(promptId);
+                finish({ kind: "timeout" });
+              }, descriptor.timeoutMs);
+            }
+
+            let busTimeoutMs: number | undefined;
+            if (typeof descriptor.timeoutMs === "number") {
+              busTimeoutMs = descriptor.timeoutMs > 0 ? descriptor.timeoutMs + 1000 : 0;
+            }
+
+            try {
+              bus.requestWithId(promptId, {
+                pipeline: "command",
+                type: "input",
+                question: descriptor.title,
+                metadata: {
+                  kind: "pi-sudo-password",
+                  ...(typeof descriptor.subtitle === "string" ? { message: descriptor.subtitle } : {}),
+                },
+              }, busTimeoutMs).then((response) => {
+                if (response.cancelled) finish({ kind: timedOut ? "timeout" : "cancelled" });
+                else finish({ kind: "ok", password: response.answer ?? "" });
+              }, () => finish({ kind: "cancelled" }));
+            } catch {
+              finish({ kind: "cancelled" });
+            }
+          });
+        };
+        Object.defineProperty(custom, "__piDashboardSudoPasswordPrompt", { value: true });
+        (ctx.ui as any).custom = custom;
+      }
+
       // Build a `metadata` envelope for bus.request that includes both
       // `message` (existing) and `toolCallId` (new — added by change
       // `fix-interactive-ui-reorder` so the client reducer can pair the

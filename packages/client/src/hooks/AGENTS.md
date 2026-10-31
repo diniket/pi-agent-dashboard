@@ -79,7 +79,7 @@ Files in this directory. One row per source file.
 | `useTheme.ts` | Theme mode + named-theme state. Reads `dashboard:theme`/`dashboard:theme-name` from `localStorage`, resolves… → see `useTheme.ts.AGENTS.md` |
 | `useToolFullResult.ts` | NEW. Fetch hook `useToolFullResult(sessionId, toolCallId) → { result?, error?, loading, fetchFull }`. → see `useToolFullResult.ts.AGENTS.md` |
 | `useViewDispatcher.ts` | Sends `session_view`/`session_unview` on `viewedSessionId` transitions, re-sends `session_view` on every WebSocket (re)connect into `connected`. Exports `useViewDispatcher`, `UseViewDispatcherDeps`. |
-| `useWebSocket.ts` | WebSocket lifecycle: connects `url`, parses `ServerToBrowserMessage`, exposes `send`/`onMessage`/`status`/`ws`… → see `useWebSocket.ts.AGENTS.md` |
+| `useWebSocket.ts` | WebSocket lifecycle: connects `url`, parses `ServerToBrowserMessage`, exposes `send`/`onMessage`/`status`/`ws`; `{queue:false}` rejects non-open sends without outbox retention. → see `useWebSocket.ts.AGENTS.md` |
 | `useZoomPan.ts` | Re-export shim. Forwards `@blackbelt-technology/pi-dashboard-client-utils/useZoomPan` (moved in `complete-flows-plugin-migration` Layer 0). |
 | `useAcpAgents.ts` | Configured ACP agents `{id,name}` from `GET /api/acp/agents`; module-cached; empty on failure. `useAcpAgents()`. See change: add-acp-session-driver. |
 | `useAgentAwareSpawn.ts` | Wraps a `handleSpawnSession` callback to add the folder's REMEMBERED agent when none given (board / landing spawns). See change: add-acp-session-driver. |
