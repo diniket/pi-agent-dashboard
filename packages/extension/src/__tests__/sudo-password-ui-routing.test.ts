@@ -1,42 +1,63 @@
 import { describe, expect, it, vi } from "vitest";
 import { patchUiForPromptBus } from "../bridge-handlers/ui-prompt-patch.js";
+import { PromptBus } from "../prompt-bus.js";
 import { makeStubInstance } from "./helpers/bridge-instance-stub.js";
 
 const MARKER = "__piDashboardSudoPasswordPrompt";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
+function makeBus() {
+  const request = deferred<any>();
+  const adapters: any[] = [];
+  const bus = {
+    requestWithId: vi.fn((_id: string, _request: unknown, _timeoutMs?: number) => request.promise),
+    cancel: vi.fn((id: string) => request.resolve({ id, cancelled: true, source: "__bus__" })),
+    request: vi.fn(),
+    registerAdapter: vi.fn((adapter) => adapters.push(adapter)),
+  };
+  return { bus, request, adapters };
+}
+
+function sudoFactory(onSubmit?: (result: unknown) => void, timeoutMs = 30_000) {
+  return Object.assign((_tui: unknown, _theme: unknown, _keybindings: unknown, done: (result: unknown) => void) => {
+    onSubmit?.(done);
+    return { render: () => [], handleInput: () => {} };
+  }, {
+    [MARKER]: {
+      kind: "password",
+      title: "sudo: local password required",
+      subtitle: "Test requested",
+      timeoutMs,
+    },
+  });
+}
+
 describe("pi-sudo Dashboard password routing", () => {
-  it("routes only the tagged password prompt through PromptBus without putting a secret in request metadata", async () => {
+  it("routes the tagged headless password prompt through PromptBus without secret metadata", async () => {
     const originalCustom = vi.fn();
-    const requestWithId = vi.fn(async () => ({ cancelled: false, answer: "not-a-real-secret" }));
-    const adapters: any[] = [];
-    const bus = {
-      requestWithId,
-      cancel: vi.fn(),
-      request: vi.fn(),
-      registerAdapter: vi.fn((adapter) => adapters.push(adapter)),
-    };
+    const { bus, request, adapters } = makeBus();
     const { inst } = makeStubInstance({ cachedHasUI: false } as any);
     const ctx: any = { hasUI: false, mode: "rpc", ui: { custom: originalCustom } };
     patchUiForPromptBus(inst, ctx, bus as any);
 
-    const factory = Object.assign(() => ({}), {
-      [MARKER]: {
-        kind: "password",
-        title: "sudo: local password required",
-        subtitle: "Test requested",
-        timeoutMs: 30_000,
-      },
-    });
+    const factory = sudoFactory();
+    const prompt = ctx.ui.custom(factory);
+    request.resolve({ cancelled: false, answer: "dashboard-test-secret", source: "dashboard" });
 
-    await expect(ctx.ui.custom(factory)).resolves.toEqual({ kind: "ok", password: "not-a-real-secret" });
+    await expect(prompt).resolves.toEqual({ kind: "ok", password: "dashboard-test-secret" });
     expect(originalCustom).not.toHaveBeenCalled();
-    expect(requestWithId).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+    expect(bus.requestWithId).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       pipeline: "command",
       type: "input",
       question: "sudo: local password required",
       metadata: expect.objectContaining({ kind: "pi-sudo-password", message: "Test requested" }),
     }), 31_000);
-    expect(JSON.stringify(requestWithId.mock.calls[0])).not.toContain("not-a-real-secret");
+    expect(JSON.stringify(bus.requestWithId.mock.calls[0])).not.toContain("dashboard-test-secret");
 
     const adapter = adapters.find((candidate) => candidate.name === "pi-sudo-password");
     expect(adapter).toBeTruthy();
@@ -47,13 +68,159 @@ describe("pi-sudo Dashboard password routing", () => {
     expect(adapter.onRequest({ id: "p2", pipeline: "command", type: "input", question: "ordinary" })).toBeUndefined();
   });
 
-  it("keeps the existing custom TUI flow for ordinary Pi/Pi-Bolt TUI sessions", async () => {
-    const originalCustom = vi.fn(async (factory: () => unknown) => factory());
-    const bus = { request: vi.fn(), requestWithId: vi.fn(), cancel: vi.fn(), registerAdapter: vi.fn() };
+  it("shows the tagged prompt in TUI and Dashboard, and dismisses TUI when Dashboard wins", async () => {
+    const native = deferred<unknown>();
+    let submitTui!: (result: unknown) => void;
+    const originalCustom = vi.fn((wrappedFactory: any) => {
+      wrappedFactory({}, {}, {}, native.resolve);
+      return native.promise;
+    });
+    const { bus, request } = makeBus();
     const { inst } = makeStubInstance({ cachedHasUI: true } as any);
     const ctx: any = { hasUI: true, mode: "tui", ui: { custom: originalCustom } };
     patchUiForPromptBus(inst, ctx, bus as any);
-    const factory = Object.assign(() => "tui-result", { [MARKER]: { kind: "password" } });
+
+    const prompt = ctx.ui.custom(sudoFactory((done) => { submitTui = done as typeof submitTui; }));
+    expect(originalCustom).toHaveBeenCalledOnce();
+    expect(bus.requestWithId).toHaveBeenCalledOnce();
+
+    request.resolve({ cancelled: false, answer: "dashboard-test-secret", source: "dashboard" });
+    await expect(prompt).resolves.toEqual({ kind: "ok", password: "dashboard-test-secret" });
+    await expect(native.promise).resolves.toEqual({ kind: "cancelled" });
+    expect(JSON.stringify(bus.requestWithId.mock.calls[0])).not.toContain("dashboard-test-secret");
+    expect(submitTui).toBeTypeOf("function");
+  });
+
+  it("uses the TUI answer when it wins and cancels the Dashboard prompt", async () => {
+    const native = deferred<unknown>();
+    let submitTui!: (result: unknown) => void;
+    const originalCustom = vi.fn((wrappedFactory: any) => {
+      wrappedFactory({}, {}, {}, native.resolve);
+      return native.promise;
+    });
+    const { bus, request } = makeBus();
+    const { inst } = makeStubInstance({ cachedHasUI: true } as any);
+    const ctx: any = { hasUI: true, mode: "tui", ui: { custom: originalCustom } };
+    patchUiForPromptBus(inst, ctx, bus as any);
+
+    const prompt = ctx.ui.custom(sudoFactory((done) => { submitTui = done as typeof submitTui; }));
+    submitTui({ kind: "ok", password: "tui-test-secret" });
+
+    await expect(prompt).resolves.toEqual({ kind: "ok", password: "tui-test-secret" });
+    await expect(native.promise).resolves.toEqual({ kind: "ok", password: "tui-test-secret" });
+    expect(bus.cancel).toHaveBeenCalledWith(bus.requestWithId.mock.calls[0][0]);
+    await expect(request.promise).resolves.toMatchObject({ cancelled: true, source: "__bus__" });
+    expect(JSON.stringify(bus.requestWithId.mock.calls[0])).not.toContain("tui-test-secret");
+  });
+
+  it("lets the native TUI resolve its own timeout", async () => {
+    const native = deferred<unknown>();
+    let submitTui!: (result: unknown) => void;
+    const originalCustom = vi.fn((wrappedFactory: any) => {
+      wrappedFactory({}, {}, {}, native.resolve);
+      return native.promise;
+    });
+    const { bus, request } = makeBus();
+    const { inst } = makeStubInstance({ cachedHasUI: true } as any);
+    const ctx: any = { hasUI: true, mode: "tui", ui: { custom: originalCustom } };
+    patchUiForPromptBus(inst, ctx, bus as any);
+
+    const prompt = ctx.ui.custom(sudoFactory((done) => { submitTui = done as typeof submitTui; }, 10));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    submitTui({ kind: "timeout" });
+
+    await expect(prompt).resolves.toEqual({ kind: "timeout" });
+    await expect(native.promise).resolves.toEqual({ kind: "timeout" });
+    await expect(request.promise).resolves.toMatchObject({ cancelled: true, source: "__bus__" });
+  });
+
+  it("never opens an unmasked native input for a mirrored password prompt", async () => {
+    const native = deferred<unknown>();
+    const input = vi.fn(() => new Promise<string>(() => {}));
+    const originalCustom = vi.fn((wrappedFactory: any) => {
+      wrappedFactory({}, {}, {}, native.resolve);
+      return native.promise;
+    });
+    const onDashboardRequest = vi.fn();
+    const bus = new PromptBus({ onDashboardRequest });
+    const { inst } = makeStubInstance({ cachedHasUI: true } as any);
+    const ctx: any = { hasUI: true, mode: "tui", ui: { custom: originalCustom, input } };
+    patchUiForPromptBus(inst, ctx, bus);
+
+    const prompt = ctx.ui.custom(sudoFactory());
+    const [{ request }] = bus.getPendingRequests();
+    bus.respond({ id: request.id, answer: "dashboard-test-secret", source: "dashboard" });
+
+    await expect(prompt).resolves.toEqual({ kind: "ok", password: "dashboard-test-secret" });
+    await expect(native.promise).resolves.toEqual({ kind: "cancelled" });
+    expect(input).not.toHaveBeenCalled();
+    expect(onDashboardRequest).toHaveBeenCalledWith(
+      expect.anything(), { type: "pi-sudo-password", props: {} }, "inline",
+    );
+    expect(bus.pendingCount).toBe(0);
+  });
+
+  it.each([
+    { kind: "ok", password: "tui-test-secret" },
+    { kind: "cancelled" },
+    { kind: "timeout" },
+  ])("settles the real bus when the TUI returns $kind", async (result) => {
+    const native = deferred<unknown>();
+    let submitTui!: (result: unknown) => void;
+    const originalCustom = vi.fn((wrappedFactory: any) => {
+      wrappedFactory({}, {}, {}, native.resolve);
+      return native.promise;
+    });
+    const onDashboardCancel = vi.fn();
+    const bus = new PromptBus({ onDashboardCancel });
+    const { inst } = makeStubInstance({ cachedHasUI: true } as any);
+    const ctx: any = { hasUI: true, mode: "tui", ui: { custom: originalCustom } };
+    patchUiForPromptBus(inst, ctx, bus);
+
+    const prompt = ctx.ui.custom(sudoFactory((done) => { submitTui = done as typeof submitTui; }));
+    const [{ request }] = bus.getPendingRequests();
+    submitTui(result);
+    // A late Dashboard answer must not replace the native result.
+    bus.respond({ id: request.id, answer: "late-test-secret", source: "dashboard" });
+
+    await expect(prompt).resolves.toEqual(result);
+    await expect(native.promise).resolves.toEqual(result);
+    expect(onDashboardCancel).toHaveBeenCalledExactlyOnceWith(request.id);
+    expect(bus.pendingCount).toBe(0);
+  });
+
+  it("dismisses both native and Dashboard prompts on abort", async () => {
+    const native = deferred<unknown>();
+    const originalCustom = vi.fn((wrappedFactory: any) => {
+      wrappedFactory({}, {}, {}, native.resolve);
+      return native.promise;
+    });
+    const onDashboardCancel = vi.fn();
+    const bus = new PromptBus({ onDashboardCancel });
+    const { inst } = makeStubInstance({ cachedHasUI: true } as any);
+    const ctx: any = { hasUI: true, mode: "tui", ui: { custom: originalCustom } };
+    patchUiForPromptBus(inst, ctx, bus);
+    const controller = new AbortController();
+    const factory = sudoFactory();
+    Object.assign(factory[MARKER], { signal: controller.signal });
+
+    const prompt = ctx.ui.custom(factory);
+    const [{ request }] = bus.getPendingRequests();
+    controller.abort();
+
+    await expect(prompt).resolves.toEqual({ kind: "cancelled" });
+    await expect(native.promise).resolves.toEqual({ kind: "cancelled" });
+    expect(onDashboardCancel).toHaveBeenCalledExactlyOnceWith(request.id);
+    expect(bus.pendingCount).toBe(0);
+  });
+
+  it("keeps ordinary custom TUI prompts native", async () => {
+    const originalCustom = vi.fn(async (factory: () => unknown) => factory());
+    const { bus } = makeBus();
+    const { inst } = makeStubInstance({ cachedHasUI: true } as any);
+    const ctx: any = { hasUI: true, mode: "tui", ui: { custom: originalCustom } };
+    patchUiForPromptBus(inst, ctx, bus as any);
+    const factory = () => "tui-result";
 
     await expect(ctx.ui.custom(factory)).resolves.toBe("tui-result");
     expect(originalCustom).toHaveBeenCalledWith(factory, undefined);

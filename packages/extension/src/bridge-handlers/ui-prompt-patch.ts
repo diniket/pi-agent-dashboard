@@ -70,42 +70,52 @@ export function patchUiForPromptBus(inst: BridgeInstance, ctx: any, promptBus: P
       if (originalCustom) {
         const custom = (factory: any, options?: unknown): Promise<unknown> => {
           const descriptor = factory?.__piDashboardSudoPasswordPrompt;
-          // Only pi-sudo's explicitly tagged prompt crosses the bridge, and
-          // only in RPC sessions that started without a UI. Native TUI sessions
-          // retain the original custom renderer unchanged.
-          if (descriptor?.kind !== "password" || inst.cachedHasUI !== false) {
-            return originalCustom(factory, options);
-          }
+          if (descriptor?.kind !== "password") return originalCustom(factory, options);
+
+          const dashboardOnly = inst.cachedHasUI === false;
+          const mirrorTui = inst.cachedHasUI === true;
+          // Unknown UI capability keeps the native behavior rather than
+          // silently replacing a prompt we cannot prove the Dashboard can show.
+          if (!dashboardOnly && !mirrorTui) return originalCustom(factory, options);
 
           const promptId = crypto.randomUUID();
           let timer: ReturnType<typeof setTimeout> | undefined;
           let timedOut = false;
           let settled = false;
+          let nativeDone: ((result: unknown) => void) | undefined;
+          let nativeDoneCalled = false;
           const signal: AbortSignal | undefined = descriptor.signal;
 
           return new Promise((resolve) => {
-            const finish = (result: unknown) => {
+            const closeNative = () => {
+              if (!nativeDone || nativeDoneCalled) return;
+              nativeDone({ kind: "cancelled" });
+            };
+            const finish = (result: unknown, source: "dashboard" | "tui" | "other") => {
               if (settled) return;
               settled = true;
               if (timer) clearTimeout(timer);
               signal?.removeEventListener("abort", onAbort);
+              // The other UI loses the race: dismiss it immediately. A TUI
+              // answer cancels the Dashboard request without sending the
+              // password over the bridge.
+              if (source !== "dashboard") bus.cancel(promptId);
+              if (source !== "tui") closeNative();
               resolve(result);
             };
-            const onAbort = () => {
-              bus.cancel(promptId);
-              finish({ kind: "cancelled" });
-            };
+            const onAbort = () => finish({ kind: "cancelled" }, "other");
 
             if (signal?.aborted) {
-              finish({ kind: "cancelled" });
+              finish({ kind: "cancelled" }, "other");
               return;
             }
             signal?.addEventListener("abort", onAbort, { once: true });
-            if (typeof descriptor.timeoutMs === "number" && descriptor.timeoutMs > 0) {
+            // A mirrored native prompt (pi-sudo) owns its own timeout. Keep
+            // this bridge timer only for Dashboard-only sessions.
+            if (dashboardOnly && typeof descriptor.timeoutMs === "number" && descriptor.timeoutMs > 0) {
               timer = setTimeout(() => {
                 timedOut = true;
-                bus.cancel(promptId);
-                finish({ kind: "timeout" });
+                finish({ kind: "timeout" }, "other");
               }, descriptor.timeoutMs);
             }
 
@@ -124,11 +134,41 @@ export function patchUiForPromptBus(inst: BridgeInstance, ctx: any, promptBus: P
                   ...(typeof descriptor.subtitle === "string" ? { message: descriptor.subtitle } : {}),
                 },
               }, busTimeoutMs).then((response) => {
-                if (response.cancelled) finish({ kind: timedOut ? "timeout" : "cancelled" });
-                else finish({ kind: "ok", password: response.answer ?? "" });
-              }, () => finish({ kind: "cancelled" }));
+                const result = response.cancelled
+                  ? { kind: timedOut ? "timeout" : "cancelled" }
+                  : { kind: "ok", password: response.answer ?? "" };
+                finish(result, "dashboard");
+              }, () => {
+                if (dashboardOnly) finish({ kind: "cancelled" }, "other");
+              });
             } catch {
-              finish({ kind: "cancelled" });
+              if (dashboardOnly) finish({ kind: "cancelled" }, "other");
+            }
+
+            if (mirrorTui && !settled) {
+              const wrappedFactory = (tui: any, theme: any, keybindings: any, done: (result: unknown) => void) => {
+                nativeDone = (result) => {
+                  if (nativeDoneCalled) return;
+                  nativeDoneCalled = true;
+                  done(result);
+                };
+                if (settled) {
+                  closeNative();
+                  return { render: () => [], handleInput: () => {} };
+                }
+                return factory(tui, theme, keybindings, (result: unknown) => {
+                  nativeDone?.(result);
+                  finish(result, "tui");
+                });
+              };
+              try {
+                Promise.resolve(originalCustom(wrappedFactory, options)).then(
+                  (result) => finish(result, "tui"),
+                  () => finish({ kind: "cancelled" }, "other"),
+                );
+              } catch {
+                finish({ kind: "cancelled" }, "other");
+              }
             }
           });
         };

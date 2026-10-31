@@ -57,6 +57,9 @@ export function createTuiPromptAdapter(
     name: "tui",
 
     onRequest(prompt) {
+      // The tagged password prompt already owns a masked native custom UI.
+      // Never mirror it through the ordinary, unmasked input primitive.
+      if (prompt.metadata?.kind === "pi-sudo-password") return;
       const controller = new AbortController();
       activeControllers.set(prompt.id, controller);
 
