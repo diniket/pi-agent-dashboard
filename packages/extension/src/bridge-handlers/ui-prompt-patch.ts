@@ -85,10 +85,18 @@ export function patchUiForPromptBus(inst: BridgeInstance, ctx: any, promptBus: P
           const descriptor = factory?.__piDashboardSudoPasswordPrompt;
           if (descriptor?.kind !== "password") return originalCustom(factory, options);
 
-          const dashboardOnly = inst.cachedHasUI === false;
-          const mirrorTui = inst.cachedHasUI === true;
-          // Unknown UI capability keeps the native behavior rather than
-          // silently replacing a prompt we cannot prove the Dashboard can show.
+          // Terminal-only UI is guarded on `mode`, NOT on `hasUI`: pi documents
+          // `hasUI` as "true in TUI and RPC modes", while RPC's native
+          // `ctx.ui.custom` is a no-op that resolves `undefined`. Keying the
+          // mirror arm on `hasUI` alone made that `undefined` win the race in a
+          // Dashboard-spawned (RPC) session, cancelling the Dashboard prompt
+          // and leaving the caller to read `.kind` off `undefined`.
+          const mirrorTui = ctx.mode === "tui" && inst.cachedHasUI === true;
+          // A known dialog-capable UI that is not a terminal has no native
+          // presenter at all, so the Dashboard is the only option. An UNKNOWN
+          // UI capability keeps native behavior rather than silently replacing
+          // a prompt we cannot prove the Dashboard can show.
+          const dashboardOnly = inst.cachedHasUI !== undefined && !mirrorTui;
           if (!dashboardOnly && !mirrorTui) return originalCustom(factory, options);
 
           const promptId = crypto.randomUUID();

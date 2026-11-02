@@ -214,6 +214,93 @@ describe("pi-sudo Dashboard password routing", () => {
     expect(bus.pendingCount).toBe(0);
   });
 
+  // Regression: a Dashboard-spawned session runs pi in RPC mode, where `ctx.hasUI`
+  // is TRUE (pi documents `hasUI` as "true in TUI and RPC modes") but the native
+  // `ctx.ui.custom` primitive is a no-op returning `undefined` (pi rpc-mode.js:
+  // `async custom() { return undefined; }`). The mirror arm keyed only on
+  // `cachedHasUI === true`, so it treated RPC as a real terminal: the no-op
+  // resolved `undefined`, won the race, cancelled the Dashboard request and the
+  // caller read `.kind` off `undefined` ->
+  // "TypeError: Cannot read properties of undefined (reading 'kind')".
+  // Terminal-only UI must be guarded on `ctx.mode === "tui"`, per the pi type docs.
+  describe("RPC session (dialog-capable UI, no terminal)", () => {
+    // Faithful stand-in for pi's RPC implementation.
+    const rpcNoopCustom = () => vi.fn(async () => undefined);
+
+    it("routes the tagged password prompt through the bus, never the native no-op", async () => {
+      const originalCustom = rpcNoopCustom();
+      const onDashboardRequest = vi.fn();
+      const bus = new PromptBus({ onDashboardRequest });
+      const { inst } = makeStubInstance({ cachedHasUI: true } as any);
+      const ctx: any = { hasUI: true, mode: "rpc", ui: { custom: originalCustom } };
+      patchUiForPromptBus(inst, ctx, bus);
+
+      const prompt = ctx.ui.custom(sudoFactory());
+
+      expect(originalCustom).not.toHaveBeenCalled();
+      const [{ request }] = bus.getPendingRequests();
+      expect(request.metadata).toMatchObject({ kind: "pi-sudo-password" });
+      expect(onDashboardRequest).toHaveBeenCalledWith(
+        expect.anything(), { type: "pi-sudo-password", props: {} }, "inline",
+      );
+
+      bus.respond({ id: request.id, answer: "dashboard-test-secret", source: "dashboard" });
+      await expect(prompt).resolves.toEqual({ kind: "ok", password: "dashboard-test-secret" });
+      expect(bus.pendingCount).toBe(0);
+    });
+
+    it("does not let the native no-op settle or cancel the Dashboard request", async () => {
+      const originalCustom = rpcNoopCustom();
+      const onDashboardCancel = vi.fn();
+      const bus = new PromptBus({ onDashboardCancel });
+      const { inst } = makeStubInstance({ cachedHasUI: true } as any);
+      const ctx: any = { hasUI: true, mode: "rpc", ui: { custom: originalCustom } };
+      patchUiForPromptBus(inst, ctx, bus);
+
+      const prompt = ctx.ui.custom(sudoFactory());
+      // Let the native no-op resolve: a `undefined` result must NOT be able to
+      // close the request, otherwise the Dashboard dialog vanishes in one tick.
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+
+      expect(onDashboardCancel).not.toHaveBeenCalled();
+      expect(bus.pendingCount).toBe(1);
+
+      const [{ request }] = bus.getPendingRequests();
+      bus.respond({ id: request.id, answer: "dashboard-test-secret", source: "dashboard" });
+      await expect(prompt).resolves.toEqual({ kind: "ok", password: "dashboard-test-secret" });
+      expect(bus.pendingCount).toBe(0);
+    });
+
+    it("resolves a tagged RPC prompt with a `kind`, never with undefined", async () => {
+      const originalCustom = rpcNoopCustom();
+      const bus = new PromptBus({});
+      const { inst } = makeStubInstance({ cachedHasUI: true } as any);
+      const ctx: any = { hasUI: true, mode: "rpc", ui: { custom: originalCustom } };
+      patchUiForPromptBus(inst, ctx, bus);
+
+      const prompt = ctx.ui.custom(sudoFactory());
+      const [{ request }] = bus.getPendingRequests();
+      bus.respond({ id: request.id, cancelled: true, source: "dashboard" });
+
+      // The caller does `result.kind`; a settled `undefined` is the crash.
+      const result = await prompt;
+      expect(result).toBeDefined();
+      expect(result).toEqual({ kind: "cancelled" });
+    });
+
+    it("keeps ordinary untagged custom prompts on the native path", async () => {
+      const originalCustom = rpcNoopCustom();
+      const bus = new PromptBus({});
+      const { inst } = makeStubInstance({ cachedHasUI: true } as any);
+      const ctx: any = { hasUI: true, mode: "rpc", ui: { custom: originalCustom } };
+      patchUiForPromptBus(inst, ctx, bus);
+
+      await ctx.ui.custom(() => "untagged-result");
+      expect(originalCustom).toHaveBeenCalledOnce();
+      expect(bus.pendingCount).toBe(0);
+    });
+  });
+
   it("keeps ordinary custom TUI prompts native", async () => {
     const originalCustom = vi.fn(async (factory: () => unknown) => factory());
     const { bus } = makeBus();
