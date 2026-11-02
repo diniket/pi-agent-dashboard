@@ -32,7 +32,8 @@ export function patchUiForPromptBus(inst: BridgeInstance, ctx: any, promptBus: P
       input: ctx.ui.input?.bind(ctx.ui) as ((q: string, placeholder?: string, extra?: any) => Promise<string | undefined>) | undefined,
       confirm: ctx.ui.confirm?.bind(ctx.ui) as ((q: string, msg: string, extra?: any) => Promise<boolean>) | undefined,
       editor: ctx.ui.editor?.bind(ctx.ui) as ((q: string, prefill?: string, extra?: any) => Promise<string | undefined>) | undefined,
-      // NOTE: the `custom` field is intentionally NOT captured here. A
+      // NOTE: `custom` is intentionally NOT a member of this `originals` object,
+      // which is the capture consumed by the ordinary TUI prompt adapter. A
       // previous change (fix-multiselect-auto-cancel-on-dashboard) added a
       // TUI multiselect arm that awaited the original ctx.ui.custom binding,
       // but pi 0.70's RPC mode defines that primitive as a no-op (returns
@@ -42,6 +43,18 @@ export function patchUiForPromptBus(inst: BridgeInstance, ctx: any, promptBus: P
       // rationale. A repo lint (no-tui-multiselect-arm-regression.test.ts)
       // prevents reintroduction by banning the co-occurrence of two
       // substrings (the captured original binding and the TUI arm match).
+      //
+      // Do not re-arm `custom` here: the ban applies to the ordinary TUI
+      // adapter, not to the sudo path below.
+      //
+      // The `pi-sudo-password` flow is a separate, deliberate exception. It
+      // captures `originalCustom` on its own (see the capture above this
+      // object) and uses it only for the factory explicitly tagged
+      // `__piDashboardSudoPasswordPrompt`. In RPC/headless sessions that
+      // tagged prompt is routed through the PromptBus instead of the native
+      // custom primitive; the native binding is only awaited when the session
+      // actually owns a UI. Ordinary, untagged custom prompts keep the native
+      // behavior untouched.
     };
 
     // Register TUI adapter — presents prompts in the terminal using original
